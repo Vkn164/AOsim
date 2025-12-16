@@ -1,0 +1,18 @@
+{
+    "telescope_diameter": 8,
+    "telescope_center_obscuration": 0.14,
+    "wfs_lambda": 550e-9,
+	"science_lambda": 200e-9,
+    "actuators": 20,
+    "sub_apertures": 40,   
+	"grid_size": 512,
+	"field_padding": 4,
+	"poke_amplitude": 1e-6,
+	"frame_rate": 500,
+	"r0": 0.4,
+    "L0": 25.0,
+    "Vwind": 25.0,
+    "random_seed":12,
+    "use_gpu": true,
+    "data_path": "data/"
+}
