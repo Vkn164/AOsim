@@ -5,7 +5,7 @@ import numpy as np
 from pathlib import Path
 import json
 
-with open(Path(__file__).parent.parent / "config.json", "r") as f:
+with open(Path(__file__).parent.parent / "config_default.json", "r") as f:
     config = json.load(f)
 
 params = config.copy()

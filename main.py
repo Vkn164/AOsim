@@ -31,7 +31,7 @@ class MainWindow(QMainWindow):
     # Signal to request the worker: (k, job_id)
     update_request = Signal(int, int)
 
-    with open(Path(__file__).parent / "config.json", "r") as f:
+    with open(Path(__file__).parent / "config_default.json", "r") as f:
         config = json.load(f)
 
     parser = argparse.ArgumentParser()

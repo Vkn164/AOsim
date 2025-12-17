@@ -11,7 +11,7 @@ import scripts.utilities as ut
 from data.CONFIG_DTYPES import CONFIG_DTYPES
 
 class Config_table(QWidget):
-    params_changed = Signal()
+    params_changed = Signal(dict)
 
     def __init__(self, section_key, config_dict):
         super().__init__()
@@ -75,11 +75,9 @@ class Config_table(QWidget):
             value = value_str
         # update shared config
         self.config[key] = value
-
-        ut.set_params(self.config)
         
         # emit signal so recalculation can happen
-        self.params_changed.emit()
+        self.params_changed.emit(self.config)
 
     def show_config_dtypes(config):
         text = "\n".join(f"{k}: {type(v).__name__}" for k, v in config.items())
@@ -117,8 +115,7 @@ class Config_table(QWidget):
             self.table.setItem(row, 0, key_item)
             self.table.setItem(row, 1, val_item)
         
-        ut.set_params(self.config)
-        self.params_changed.emit()
+        self.params_changed.emit(self.config)
         self.loading_config = False
 
     def save_file(self):
@@ -147,8 +144,7 @@ class Config_table(QWidget):
         for k, v in new_section.items():
             self.config[k] = v
 
-        ut.set_params(self.config)
-        self.params_changed.emit()
+        self.params_changed.emit(self.config)
 
     @staticmethod
     def _convert_value(key, val_str):

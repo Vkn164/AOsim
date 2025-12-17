@@ -26,8 +26,7 @@ class Poke_tab(QWidget):
         self.pending_index = 0
 
         # layout
-        root = self
-        main_layout = QVBoxLayout(root)
+        main_layout = QVBoxLayout(self)
 
         # top
         top_layout = QHBoxLayout()
@@ -166,6 +165,7 @@ class Poke_tab(QWidget):
         self.act_select_slider.valueChanged.connect(self.act_select_spinbox.setValue)
 
         self.config_table.params_changed.connect(self.recalculate)
+        self.config_table.params_changed.connect(ut.set_params)
         # initial request
         self._schedule_update(0)
 
@@ -289,7 +289,7 @@ class Poke_tab(QWidget):
 
         self.busy_label.setText("Waiting")
 
-    def recalculate(self):
+    def recalculate(self, params):
         # request the calc worker to recompute (queued call)
         if hasattr(self, "calc_worker") and self.calc_worker is not None:
             QMetaObject.invokeMethod(self.calc_worker, "recompute", Qt.QueuedConnection)
