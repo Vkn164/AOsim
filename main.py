@@ -22,6 +22,7 @@ CONFIG_DTYPES = {
     "telescope_diameter": float,
     "telescope_center_obscuration": float,
     "wfs_lambda": float,
+    "science_lambda": float,
     "r0": float,
     "L0": float,
     "Vwind": float,
@@ -154,6 +155,8 @@ class Config_table(QWidget):
 
     def param_change(self, item):
         key = self.table.item(item.row(), 0).text()
+        key = "_".join(str(key).lower().split())
+
         value_str = self.table.item(item.row(), 1).text()
 
         # convert to correct type
@@ -199,22 +202,30 @@ class Config_table(QWidget):
                 self.config[key] = loaded[key]
 
         # refresh table display
-        for row in range(self.table.rowCount()):
-            key = self.table.item(row, 0).text()
-            self.table.blockSignals(True)
-            self.table.setItem(row, 1, QTableWidgetItem(str(self.config.get(key, ""))))
-            self.table.blockSignals(False)
+        for row, key in enumerate(self.section_key):
+            value = self.config.get(key, "")
+
+            key_item = QTableWidgetItem(" ".join(str(key).split("_")).title())
+            key_item.setTextAlignment(Qt.AlignLeft | Qt.AlignTop)
+            key_item.setFlags(key_item.flags() & ~Qt.ItemIsEditable)
+
+            val_item = QTableWidgetItem(str(value))
+
+            self.table.setItem(row, 0, key_item)
+            self.table.setItem(row, 1, val_item)
         
         ut.set_params(self.config)
         self.params_changed.emit()
 
     def save_file(self):
         # build a dict with only the listed keys
-        new_section = {}
+        new_section = self.config.copy()
         for row in range(self.table.rowCount()):
             key = self.table.item(row, 0).text()
+            key = "_".join(str(key).lower().split())
+
             value_str = self.table.item(row, 1).text()
-            new_section[key] = self._convert_value(value_str)
+            new_section[key] = self._convert_value(key, value_str)
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
@@ -236,19 +247,14 @@ class Config_table(QWidget):
         self.params_changed.emit()
 
     @staticmethod
-    def _convert_value(val_str):
+    def _convert_value(key, val_str):
+        dtype = CONFIG_DTYPES[key]
         try:
-            if '.' in val_str:
-                return float(val_str)
-            else:
-                return int(val_str)
+            return dtype(val_str)
         except ValueError:
             print(val_str)
             return val_str
-
         
-    
-
 
 
 class Poke_tab(QWidget):
