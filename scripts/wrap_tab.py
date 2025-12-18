@@ -256,6 +256,8 @@ class WrappedTabs(QWidget):
     def set_current(self, tab):
         for t, w in self._tabs:
             t.set_active(t is tab)
+            if hasattr(w, "displayed"):
+                setattr(w, "displayed", t is tab)
             if t is tab:
                 self.stack.setCurrentWidget(w)
 

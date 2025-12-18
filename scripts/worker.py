@@ -1,7 +1,90 @@
 # scripts/worker.py
-from PySide6.QtCore import QObject, QThread, Signal, Slot, QMetaObject, Qt
+from PySide6.QtCore import QObject, QRunnable, Signal, Slot, QTimer, Qt
 import scripts.utilities as ut
 import cupy as cp
+import time
+
+class GenericWorkerSignals(QObject):
+    finished = Signal(object)  # emit the created generator
+    error = Signal(Exception)
+
+class GenericWorker(QRunnable):
+    def __init__(self, generator_func, **params):
+        super().__init__()
+        self.generator_func = generator_func
+        self.params = params
+        self.signals = GenericWorkerSignals()
+
+    def run(self):
+        try:
+            gen, next_frame_func = self.generator_func(**self.params)
+            self.signals.finished.emit((gen, next_frame_func))
+        except Exception as e:
+            self.signals.error.emit(e)
+
+class FrameWorker(QObject):
+    frame_ready = Signal(object)
+
+    def __init__(self, gen_factory, params, n_frames=None, delay=0.01):
+        super().__init__()
+        self.gen_factory = gen_factory    # callable: () -> (phase_obj, next_frame_callable)
+        self.n_frames = n_frames
+        self.params = params
+        self.delay = delay
+        self._running = False
+        self._gen, self._next_frame = self.gen_factory(**self.params)
+
+        self.step()
+
+    @Slot()
+    def _ensure_gen(self):
+        # create generator (run inside worker thread)
+        if self._gen is None:
+            obj, next_fn = self.gen_factory(**self.params)
+            self._gen = obj
+            self._next_frame = next_fn
+
+    @Slot()
+    def step(self):
+        try:
+            self._ensure_gen()
+            frame = self._next_frame()
+            self.frame_ready.emit(frame)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
+    @Slot()
+    def run(self):
+        if self._running:
+            return
+
+        self._running = True
+        self._ensure_gen()
+
+        self._timer = QTimer()
+        self._timer.setInterval( int(1000 / 30) )  # 30 fps
+        self._timer.timeout.connect(self._tick)
+        self._timer.start()
+
+    @Slot()
+    def _tick(self):
+        if not self._running:
+            return
+        frame = self._next_frame()
+        self.frame_ready.emit(frame)
+
+    @Slot()
+    def stop(self):
+        self._running = False
+
+    @Slot()
+    def reset(self):
+        self.stop()
+        self._gen = None
+        self._next_frame = None
+        self.step()
+
 
 
 class CalculateWorker(QObject):

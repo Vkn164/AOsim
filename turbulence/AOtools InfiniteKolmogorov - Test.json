@@ -1,0 +1,7 @@
+{
+    "function": "AOtools InfiniteKolmogorov",
+	"r0": 0.6,
+    "L0": 40.0,
+    "Vwind": 50.0,
+    "random_seed":28
+}
