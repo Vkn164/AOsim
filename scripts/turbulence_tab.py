@@ -14,6 +14,7 @@ from pathlib import Path
 from functools import partial
 
 from data.CONFIG_DTYPES import CONFIG_DTYPES, enforce_config_types
+import scripts.utilities as ut
 from scripts.config_table import Config_table
 from scripts.pgcanvas import PGCanvas
 from scripts.wrap_tab import WrappedTabs
@@ -71,8 +72,16 @@ class Turbulence_tab(QWidget):
         main_layout = QHBoxLayout(self)
 
         # left
+        fleft = QFrame()
+        fleft.setFrameShape(QFrame.Box)
+        fleft.setLineWidth(1)
+        left_layout = QVBoxLayout(fleft)
+        self.total_canvas = PGCanvas()
 
-        
+        left_layout.addWidget(self.total_canvas)
+        left_layout.addWidget(QLabel("Placeholder"))
+
+        main_layout.addWidget(fleft)
         # ftable = QFrame()
         # ftable.setMaximumWidth(250)
         # ftable.setMinimumWidth(218)
@@ -156,7 +165,6 @@ class Turbulence_tab(QWidget):
 
             worker.moveToThread(thread)
 
-            # worker → queue only (NO GUI)
             worker.frame_ready.connect(
                 lambda f, p=turbPage: self._frame_queue.put((p, f))
             )
@@ -172,7 +180,7 @@ class Turbulence_tab(QWidget):
         # timer runs in GUI thread
         self._frame_timer = QTimer(self)
         self._frame_timer.timeout.connect(self._process_frames)
-        self._frame_timer.start(10)
+        self._frame_timer.start(1000/30)
    
     def _process_frames(self):
         updated = False
@@ -198,7 +206,13 @@ class Turbulence_tab(QWidget):
         return cp.sum(active, axis=0)
     
     def plot_active(self):
-        self.active_canvas.set_image(self.get_active_screens())
+        total_active = self.get_active_screens()
+        self.active_canvas.set_image(total_active)
+
+        self.total_science, self.total_science_strehl = ut.Analysis.generate_science_image(phase_map=total_active)
+        self.normalized_image = self.total_science/self.total_science.sum()
+        self.total_science_plot = cp.log10(self.normalized_image + 1e-12)
+        self.total_canvas.set_image(self.total_science_plot)
 
     def run_active(self):
         for page in self.turb_selector.active_items():

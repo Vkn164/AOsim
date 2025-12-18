@@ -31,22 +31,16 @@ class PhaseMap_tools:
 
         phase_screen = aotools.turbulence.infinitephasescreen.PhaseScreenKolmogorov(grid_size, telescope_diameter/grid_size, r0, L0, random_seed=random_seed)
         phase_map = phase_screen.add_row
-        return phase_screen, phase_map
-    
-    def advance_phase_map(phase_gen_next, grid_size=None, telescope_diameter=None, Vwind=None, frame_rate=None):
-        if grid_size is None:
-            grid_size = params.get("grid_size")
-        if telescope_diameter is None:
-            telescope_diameter = params.get("telescope_diameter")
-        if frame_rate is None:
-            frame_rate = params.get("frame_rate")
 
-        shift_m = Vwind * 1/frame_rate
-        shift_pix = shift_m / (telescope_diameter/grid_size)
-        n_rows = int(np.round(abs(shift_pix)))
-        for _ in range(max(1, n_rows-1)):
-            phase_gen_next()
-        return phase_gen_next()
+        def advance_phase_map(frame_rate=500):
+            shift_m = Vwind * 1/frame_rate
+            shift_pix = shift_m / (telescope_diameter/grid_size)
+            n_rows = int(np.round(abs(shift_pix)))
+            for _ in range(max(1, n_rows-1)):
+                phase_map()
+            return phase_map()
+        
+        return phase_screen, advance_phase_map
     
     @staticmethod
     def make_influence(r0, c0, amp=1e-6, sigma=None, grid_size=None):
