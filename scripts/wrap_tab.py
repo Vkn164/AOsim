@@ -1,12 +1,14 @@
 from PySide6.QtCore import Qt, QSize, QRect, QPoint, Signal, QMargins
 from PySide6.QtWidgets import (
-    QWidget, QLabel, QToolButton, QVBoxLayout, QHBoxLayout,
+    QWidget, QLabel, QVBoxLayout, QHBoxLayout,
     QLayout, QSizePolicy, QStackedWidget, QTabWidget, QScrollArea
 )
 from PySide6.QtGui import QPalette
 from PySide6.QtGui import QFontMetrics
 from scripts.popout_window import PopoutWindow
 
+# modified code found online
+# allows Widgets to wrap if there is not enough space horizontally
 class FlowLayout(QLayout):
     def __init__(self, parent=None, margin=0, spacing=-1):
         super().__init__(parent)
@@ -107,7 +109,7 @@ class FlowLayout(QLayout):
 
 
 
-
+# Widget denoting each tab in the tab bar
 class TabItemWidget(QWidget):
     clicked = Signal()
     closed = Signal()
@@ -115,7 +117,8 @@ class TabItemWidget(QWidget):
 
     def __init__(self, text: str, normal_style, active_style, closable=True):
         super().__init__()
-        
+        self.closable = closable
+
         self._text = text
         self.label = QLabel(text)
         layout = QHBoxLayout(self)
@@ -133,7 +136,7 @@ class TabItemWidget(QWidget):
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
             self.clicked.emit()
-        elif e.button() == Qt.RightButton:
+        elif (self.closable and e.button() == Qt.RightButton):
             self.closed.emit() 
 
     def mouseDoubleClickEvent(self, e):

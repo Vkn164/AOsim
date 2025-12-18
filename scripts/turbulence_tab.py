@@ -1,46 +1,23 @@
-from PySide6.QtCore import Qt, QRect, QTimer, Signal, Slot, QThread, Signal, QMetaObject, QObject
+from PySide6.QtCore import Qt, QTimer, Signal, Slot, QThread, Signal, QMetaObject
 from PySide6.QtWidgets import (
     QHBoxLayout, QVBoxLayout, QWidget,
     QLabel, QFrame,
-    QTabWidget, QTabBar,
-    QListWidget, QListWidgetItem, QStackedWidget,
-    QPushButton, QToolButton, QSizePolicy,
+    QListWidget, QListWidgetItem, QPushButton, QSizePolicy,
     QListWidget, QSpinBox
-
 )
 
 import json
 from pathlib import Path
-from functools import partial
 
-from data.CONFIG_DTYPES import CONFIG_DTYPES, enforce_config_types
 import scripts.utilities as ut
 from scripts.config_table import Config_table
 from scripts.pgcanvas import PGCanvas
 from scripts.wrap_tab import WrappedTabs
 from scripts.utilities import PhaseMap_tools
-from scripts.worker import GenericWorker, FrameWorker
+from scripts.worker import FrameWorker
 
-from PySide6.QtCore import QRunnable, QThreadPool
 import cupy as cp
 import queue
-
-class WorkerSignals(QObject):
-    finished = Signal()
-    result = Signal(object)
-
-class Worker(QRunnable):
-    def __init__(self, fn, *args, **kwargs):
-        super().__init__()
-        self.fn = fn
-        self.args = args
-        self.kwargs = kwargs
-        self.signals = WorkerSignals()
-
-    def run(self):
-        result = self.fn(*self.args, **self.kwargs)
-        self.signals.result.emit(result)
-        self.signals.finished.emit()
 
 class Turbulence_tab(QWidget):
 
@@ -50,10 +27,11 @@ class Turbulence_tab(QWidget):
 
         self.available_funcs = {
             "AOtools InfiniteKolmogorov": PhaseMap_tools.generate_phase_map
-        }
+        } # add more in the future
 
         screen_directory = Path(__file__).parent.parent/ "turbulence"
 
+        # load turbulence screens from "/turbulence" folder
         self.turbulence_screens = []
         for file_path in screen_directory.iterdir():
             if file_path.is_file():   # skip subdirectories
@@ -63,7 +41,7 @@ class Turbulence_tab(QWidget):
                     content_data = {k: v for k, v in content.items() if k != "function"}
                     self.turbulence_screens.append({"name": content_name, "data": content_data, "function": self.available_funcs[content["function"]]})   
 
-
+        # initalize tab/page for each loaded screen
         self.turbPages = []
         for i, screen in enumerate(self.turbulence_screens):
             turbPage = TurbulencePage(screen["function"], screen["data"], screen["name"])
@@ -71,7 +49,7 @@ class Turbulence_tab(QWidget):
 
         main_layout = QHBoxLayout(self)
 
-        # left
+        # left -- final psf viewer
         fleft = QFrame()
         fleft.setFrameShape(QFrame.Box)
         fleft.setLineWidth(1)
@@ -82,18 +60,13 @@ class Turbulence_tab(QWidget):
         left_layout.addWidget(QLabel("Placeholder"))
 
         main_layout.addWidget(fleft)
-        # ftable = QFrame()
-        # ftable.setMaximumWidth(250)
-        # ftable.setMinimumWidth(218)
 
-        # ftable_layout = QVBoxLayout(ftable)
-        # main_layout.addWidget(ftable)
-
-        # middle
+        # middle -- layered turbulence viewer
         fmiddle = QFrame()
         fmiddle.setFrameShape(QFrame.Box)
         fmiddle.setLineWidth(1)
 
+        ## plot canvas
         middle_layout = QVBoxLayout(fmiddle)
         self.active_canvas = PGCanvas()
 
@@ -102,6 +75,7 @@ class Turbulence_tab(QWidget):
         phase_b_layout = QHBoxLayout()
         middle_layout.addLayout(phase_b_layout)
 
+        ## run/stop buttons
         self.next_button = QPushButton("Next Step")
         self.run_x_button = QPushButton("Run X Frames")
         self.run_inf_button = QPushButton("Run Indefinitely")
@@ -124,6 +98,7 @@ class Turbulence_tab(QWidget):
         self.stop_button.clicked.connect(self.stop_active)
         self.reset_button.clicked.connect(self.reset_active)
  
+        ## list selectors for active/inactive screens
         self.turb_selector = DualListSelector(available=self.turbPages[1:], active=self.turbPages[:1], text_key="title")
         self.turb_selector.activeChanged.connect(self.plot_active)
 
@@ -132,8 +107,8 @@ class Turbulence_tab(QWidget):
 
         main_layout.addWidget(fmiddle)
 
-
-        # right
+ 
+        # right -- turbulence editor
         right_layout = QVBoxLayout()
 
         fright_top = QFrame()
@@ -147,7 +122,6 @@ class Turbulence_tab(QWidget):
         for i, page in enumerate(self.turbPages):
             tab_widget.add_tab(page)
 
-
         right_top_layout.addWidget(tab_widget)
 
         right_layout.addWidget(fright_top)
@@ -155,6 +129,8 @@ class Turbulence_tab(QWidget):
 
         QTimer.singleShot(0, self.start_turbulence_worker)
 
+    # create thread for each loaded screen
+    ## NOTE need to change once ability to add/delete screens implemented
     def start_turbulence_worker(self):
         self._frame_queue = queue.Queue()
         self._threads = []
@@ -165,13 +141,13 @@ class Turbulence_tab(QWidget):
 
             worker.moveToThread(thread)
 
+            # add created frame to queue once done
             worker.frame_ready.connect(
                 lambda f, p=turbPage: self._frame_queue.put((p, f))
             )
             
-            
             thread.start()
-            thread.started.connect(worker.step)
+            thread.started.connect(worker.step) # initialize threads/pages on startup
 
             turbPage._worker = worker
             turbPage._thread = thread
@@ -182,6 +158,7 @@ class Turbulence_tab(QWidget):
         self._frame_timer.timeout.connect(self._process_frames)
         self._frame_timer.start(1000/30)
    
+    # update pages and layered screen viewer when threads finish
     def _process_frames(self):
         updated = False
 
@@ -197,6 +174,7 @@ class Turbulence_tab(QWidget):
         if updated:
             self.plot_active()
 
+    # get currently active screens
     def get_active_screens(self):
         active = [
                     item.current_screen for item in self.turb_selector.active_items()
@@ -209,11 +187,13 @@ class Turbulence_tab(QWidget):
         total_active = self.get_active_screens()
         self.active_canvas.set_image(total_active)
 
+        # calculate final PSF for active screens
         self.total_science, self.total_science_strehl = ut.Analysis.generate_science_image(phase_map=total_active)
         self.normalized_image = self.total_science/self.total_science.sum()
         self.total_science_plot = cp.log10(self.normalized_image + 1e-12)
         self.total_canvas.set_image(self.total_science_plot)
 
+    # for run/stop buttons
     def run_active(self):
         for page in self.turb_selector.active_items():
             page.run()
@@ -236,9 +216,6 @@ class Turbulence_tab(QWidget):
 
 
 
-
-
-
 class TurbulencePage(QWidget):
     new_frame = Signal(object) 
 
@@ -247,17 +224,19 @@ class TurbulencePage(QWidget):
         self.function = function
         self.params = params
         self.title = title
-        self.phase_screen, self.next_frame = None, None
+
         self.current_screen = None
         self.displayed = False
-        self._stop_flag = False
 
         self._worker = None
         self._thread = None
 
+
+        # layout
         tab_frame = QFrame(self)  
         tab_layout = QVBoxLayout(tab_frame)
 
+        # screen view
         self.turb_canvas = PGCanvas()
 
         tab_layout.addWidget(self.turb_canvas)
@@ -303,6 +282,7 @@ class TurbulencePage(QWidget):
 
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
 
+    # refresh viewer when tab/page is shown
     def showEvent(self, event):
         super().showEvent(event)
 
@@ -332,6 +312,7 @@ class TurbulencePage(QWidget):
             QMetaObject.invokeMethod(self._worker, "stop", Qt.QueuedConnection)
             QMetaObject.invokeMethod(self._worker, "reset", Qt.QueuedConnection)
 
+    # allow for main widget to activate threads
     @Slot()
     def stop(self):
         self.page_stop_button_clicked()

@@ -16,7 +16,7 @@ def set_params(new_params):
 
 class PhaseMap_tools:
     @staticmethod
-    def generate_phase_map(grid_size=None, telescope_diameter=None, r0=None, L0=None, Vwind=None, random_seed=None):
+    def generate_phase_map(grid_size=None, telescope_diameter=None, r0=None, L0=None, Vwind=None, altitude=None, random_seed=None):
         # read current params when values not provided
         if grid_size is None:
             grid_size = params.get("grid_size")
@@ -29,9 +29,11 @@ class PhaseMap_tools:
         if random_seed is None:
             random_seed = params.get("random_seed")
 
+        # create ohase screen
         phase_screen = aotools.turbulence.infinitephasescreen.PhaseScreenKolmogorov(grid_size, telescope_diameter/grid_size, r0, L0, random_seed=random_seed)
         phase_map = phase_screen.add_row
 
+        # generate next rows based on wind vel and dt
         def advance_phase_map(frame_rate=500):
             shift_m = Vwind * 1/frame_rate
             shift_pix = shift_m / (telescope_diameter/grid_size)
@@ -42,6 +44,7 @@ class PhaseMap_tools:
         
         return phase_screen, advance_phase_map
     
+    # generate influence map for an amplitude and spread factor sigma
     @staticmethod
     def make_influence(r0, c0, amp=1e-6, sigma=None, grid_size=None):
         if grid_size is None:
@@ -55,6 +58,7 @@ class PhaseMap_tools:
         # mask outside pupil to 0
         return cp.asarray(surf)
 
+    # get slopes and centroids of each sub pupil/aperture given a phase map
     def measure_slopes_from_phase(phase_map, xs, ys, sub_pupil_masks, pad=params.get("field_padding")):
         
         sub_imgs = phase_map[ys, xs] 
@@ -90,10 +94,12 @@ class Pupil_tools:
             grid_size = params.get("grid_size")
         if telescope_center_obscuration is None:
             telescope_center_obscuration = params.get("telescope_center_obscuration")
+
         outer = aotools.pupil.circle(grid_size/2, grid_size)
         inner = aotools.pupil.circle(grid_size/2 * telescope_center_obscuration, grid_size)
         return cp.asarray(outer - inner)
 
+    # generate actuator positions on pupil
     @staticmethod
     def generate_actuators(pupil=None, actuators=None, grid_size=None):
         if grid_size is None:
@@ -102,6 +108,7 @@ class Pupil_tools:
             actuators = params.get("actuators")
         if pupil is None:
             pupil = Pupil_tools.generate_pupil(grid_size=grid_size)
+
         act_centers = []
         for i in range(actuators):
             for j in range(actuators):
@@ -111,6 +118,7 @@ class Pupil_tools:
                     act_centers.append([r, c])
         return cp.asarray(act_centers)
 
+    # generate list of images that denote each actuator's influence (from 0 to 1) on the mirror
     @staticmethod
     def generate_actuator_influence_map(act_centers=None, pupil=None, actuators=None, poke_amplitude=None, grid_size=None):
         if pupil is None:
@@ -130,6 +138,7 @@ class Pupil_tools:
             influence_maps.append(surf_pos / poke_amplitude * pupil)
         return influence_maps
 
+    # generate number of sub apertures, pixel positions, pupil/phase_map indices, sub aperture width, slice indices of each sub aperture, and sub pupil image/map 
     @staticmethod
     def generate_sub_apertures(pupil=None, sub_apertures=None, grid_size=None):
         if grid_size is None:
@@ -138,24 +147,23 @@ class Pupil_tools:
             sub_apertures = params.get("sub_apertures")
         if pupil is None:
             pupil = Pupil_tools.generate_pupil(grid_size=grid_size)
+
         sub_aps = aotools.wfs.findActiveSubaps(sub_apertures, pupil, 0.6)
         sub_aps = cp.asarray(sub_aps)
+        active_sub_aps = sub_aps.shape[0]
+
         sub_aps_idx = (sub_aps/(grid_size/sub_apertures)).astype(int)
+
         sub_ap_width = grid_size/sub_apertures
+
         sub_slice = [(slice(i[0], i[0]+int(sub_ap_width)+1), slice(i[1], i[1]+int(sub_ap_width)+1)) for i in (sub_aps_idx.get()*sub_ap_width).astype(int)]
+
         sub_pupils = cp.asarray([pupil[i] for i in sub_slice])
-        top_left = ((sub_aps_idx * sub_ap_width).astype(int))
-        top_left = cp.asarray(top_left)
-        h = int(sub_ap_width)+1
-        w = int(sub_ap_width)+1
-        active_sub_aps = top_left.shape[0]
-        xx = cp.arange(w)[None,:]
-        yy = cp.arange(h)[:,None]
-        xs = top_left[:,1,None,None] + xx[None,:,:]
-        ys = top_left[:,0,None,None] + yy[None,:,:]
+
         return active_sub_aps, sub_aps, sub_aps_idx, sub_ap_width, sub_slice, sub_pupils
 
 class Analysis:
+    # for each subaperture find the centroid and generate an image 
     @staticmethod
     def generate_subaperture_images(k, pupil=None, influence_maps=None, sub_aps_idx=None, sub_ap_width=None, sub_pupils=None, poke_amplitude=None, wfs_lambda=None, pad=None):
         if poke_amplitude is None:
@@ -234,10 +242,12 @@ class Analysis:
         yy = cp.broadcast_to(yy, (n_subaps, h_p, w_p))
         xx = cp.broadcast_to(xx, (n_subaps, h_p, w_p))
 
+        # restitch individual subaperture image into one
         sensor[yy.ravel(), xx.ravel()] = I.ravel()
 
         return centroids, sensor
     
+    # create PSF given pupil and phase map
     @staticmethod
     def generate_science_image(pupil=None, phase_map=None, science_lambda=None, pad=None):
         if pad is None:

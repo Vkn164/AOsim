@@ -3,37 +3,23 @@ import json
 from pathlib import Path
 import argparse
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot, QObject, QThread, Signal, Slot, QMetaObject, Qt
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QHBoxLayout, QVBoxLayout, QWidget, QTabWidget,
-    QTableWidget, QTableWidgetItem, QSpinBox, QSlider, QLabel, QFrame, QPushButton,
-    QFileDialog, QMessageBox, QHeaderView
+    QApplication, QMainWindow, QTabWidget
 )
 
 from scripts.poke_tab import Poke_tab
 from scripts.turbulence_tab import Turbulence_tab
 
-class Worker(QThread):
-    finished = Signal(object)  # emit the result when done
-
-    def __init__(self, func, *args, **kwargs):
-        super().__init__()
-        self.func = func
-        self.args = args
-        self.kwargs = kwargs
-
-    def run(self):
-        result = self.func(*self.args, **self.kwargs)
-        self.finished.emit(result)
-
 import sys
-class MainWindow(QMainWindow):
-    # Signal to request the worker: (k, job_id)
-    update_request = Signal(int, int)
 
+# Main application window
+class MainWindow(QMainWindow):
+
+    # load default configs
     with open(Path(__file__).parent / "config_default.json", "r") as f:
         config = json.load(f)
 
+    # load command line arguments if any
     parser = argparse.ArgumentParser()
     parser.add_argument("--telescope_diameter", type=float)
     parser.add_argument("--telescope_center_obscuration", type=float)
@@ -55,6 +41,8 @@ class MainWindow(QMainWindow):
     parser.add_argument("--data_path", type=str)
     args, unknown = parser.parse_known_args()
 
+
+    # override default config with command line arguments
     params = config.copy()
     for key, value in vars(args).items():
         if value is not None:
@@ -72,6 +60,7 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(tabs)
 
+# start application
 if __name__ == "__main__":
     app = QApplication.instance()
     if app is None:

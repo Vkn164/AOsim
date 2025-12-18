@@ -21,16 +21,18 @@ class Poke_tab(QWidget):
         super().__init__()
         self.params = config_dict
 
-        # job bookkeeping
+        # calculation jobs bookkeeping
         self.job_id = 0
         self.pending_index = 0
 
-        # layout
+        # layout for entire tab
         main_layout = QVBoxLayout(self)
 
-        # top
+        ## top half
         top_layout = QHBoxLayout()
 
+
+        ## top left -- parameter configuration
         ftable = QFrame()
         ftable.setMaximumWidth(250)
         ftable.setMinimumWidth(218)
@@ -41,7 +43,7 @@ class Poke_tab(QWidget):
         
         ftable_layout.addWidget(self.config_table)
 
-        # Busy indicator
+        ## Busy indicator
         self.busy_label = QLabel("Waiting")
         self.busy_label.setAlignment(Qt.AlignCenter)
         self.busy_label.setStyleSheet("font-weight: bold;")
@@ -52,16 +54,16 @@ class Poke_tab(QWidget):
         top_layout.addWidget(ftable)
 
 
-        # left: overview canvas
-        fleft_v = QFrame()
-        fleft_v.setFrameShape(QFrame.Box)
-        fleft_v.setLineWidth(1)
-        left_v = QVBoxLayout(fleft_v)
-        left_v.addWidget(QLabel("Sub Aperture Centroids"))
+        ## middle: overview canvas
+        fmiddle_v = QFrame()
+        fmiddle_v.setFrameShape(QFrame.Box)
+        fmiddle_v.setLineWidth(1)
+        middle_v = QVBoxLayout(fmiddle_v)
+        middle_v.addWidget(QLabel("Sub Aperture Centroids"))
 
         self.canvas_overview = PGCanvas()
-        left_v.addWidget(self.canvas_overview)
-        top_layout.addWidget(fleft_v)
+        middle_v.addWidget(self.canvas_overview)
+        top_layout.addWidget(fmiddle_v)
 
         # right: selector + subap canvas
         fright_v = QFrame()
@@ -70,6 +72,7 @@ class Poke_tab(QWidget):
         right_v = QVBoxLayout(fright_v)
         right_v.addWidget(QLabel("Sub Aperture Images"))
 
+        # aperture selector
         selector_h = QHBoxLayout()
         act_selection_label = QLabel("Poke Actuator Idx")
         self.act_select_spinbox = QSpinBox()
@@ -90,6 +93,7 @@ class Poke_tab(QWidget):
         # bottom layout
         bottom_layout = QHBoxLayout()
 
+        # bottom left -- calculated values table
         fcalc_vals = QFrame()
         calc_values = QVBoxLayout(fcalc_vals)
         self.calc_values_table = QTableWidget(5, 2)
@@ -118,17 +122,17 @@ class Poke_tab(QWidget):
         fcalc_vals.setMaximumWidth(250)
         bottom_layout.addWidget(fcalc_vals)       
 
-
+        
         # science image w poke canvas
-        fleft_vb = QFrame()
-        fleft_vb.setFrameShape(QFrame.Box)
-        fleft_vb.setLineWidth(1)
-        left_vb = QVBoxLayout(fleft_vb)
-        left_vb.addWidget(QLabel("Poke Science Image"))
+        fmiddle_vb = QFrame()
+        fmiddle_vb.setFrameShape(QFrame.Box)
+        fmiddle_vb.setLineWidth(1)
+        middle_vb = QVBoxLayout(fmiddle_vb)
+        middle_vb.addWidget(QLabel("Poke Science Image"))
 
         self.canvas_science = PGCanvas()
-        left_vb.addWidget(self.canvas_science)
-        bottom_layout.addWidget(fleft_vb)
+        middle_vb.addWidget(self.canvas_science)
+        bottom_layout.addWidget(fmiddle_vb)
 
         # science image canvas
         fright_vb = QFrame()
@@ -144,14 +148,15 @@ class Poke_tab(QWidget):
         main_layout.addLayout(bottom_layout)
 
 
-        # worker/thread init
+        # calculation worker/thread init
         self.calc_thread = None
         self.calc_worker = None
 
         # Prepare AO data (start background calculation)
         self.start_calculation()
 
-        # Timers
+        # Timers for actuator selector
+        # prevents frequent updates while actuator slider is rapidly changing
         self.debounce_timer = QTimer(self)
         self.debounce_timer.setSingleShot(True)
         self.debounce_timer.setInterval(40)  # ms
@@ -164,9 +169,11 @@ class Poke_tab(QWidget):
         self.act_select_spinbox.valueChanged.connect(self.act_select_slider.setValue)
         self.act_select_slider.valueChanged.connect(self.act_select_spinbox.setValue)
 
+        # if params change, recalculate, also change utilities functions default parameters too
         self.config_table.params_changed.connect(self.recalculate)
         self.config_table.params_changed.connect(ut.set_params)
-        # initial request
+
+        # initial request on start
         self._schedule_update(0)
 
     def start_calculation(self):
@@ -229,8 +236,6 @@ class Poke_tab(QWidget):
         self.normalized_image = result["normalized_image"]
 
         # update the unperturbed science canvas
-
-
         self.canvas_science_pupil.set_image(result["science_image_plot"])
 
         # update table values

@@ -4,6 +4,8 @@ import scripts.utilities as ut
 import cupy as cp
 import time
 
+
+# ---- Generic Fire and Forget worker 
 class GenericWorkerSignals(QObject):
     finished = Signal(object)  # emit the created generator
     error = Signal(Exception)
@@ -22,12 +24,13 @@ class GenericWorker(QRunnable):
         except Exception as e:
             self.signals.error.emit(e)
 
+# Worker for turbulence screen viewers
 class FrameWorker(QObject):
     frame_ready = Signal(object)
 
     def __init__(self, gen_factory, params, n_frames=None, delay=0.01):
         super().__init__()
-        self.gen_factory = gen_factory    # callable: () -> (phase_obj, next_frame_callable)
+        self.gen_factory = gen_factory    # phase screen generator callable: () -> (phase_obj, next_frame_callable)
         self.n_frames = n_frames
         self.params = params
         self.delay = delay
