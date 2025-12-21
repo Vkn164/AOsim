@@ -50,16 +50,36 @@ class Turbulence_tab(QWidget):
         main_layout = QHBoxLayout(self)
 
         # left -- final psf viewer
+        left_layout = QVBoxLayout()
         fleft = QFrame()
         fleft.setFrameShape(QFrame.Box)
         fleft.setLineWidth(1)
-        left_layout = QVBoxLayout(fleft)
+        left_lay1 = QVBoxLayout(fleft)
         self.total_canvas = PGCanvas()
 
-        left_layout.addWidget(self.total_canvas)
-        left_layout.addWidget(QLabel("Placeholder"))
+        left_lay1.addWidget(self.total_canvas)
+        left_lay1.addWidget(QLabel("Placeholder"))
 
-        main_layout.addWidget(fleft)
+        left_layout.addWidget(fleft)
+
+        func_sel_layout = QHBoxLayout()
+
+        self.func_selector = QListWidget()
+        self.func_selector.addItems(list(self.available_funcs.keys()))
+        self.func_selector.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+
+        func_sel_layout.addWidget(self.func_selector)
+
+        func_options_layout = QVBoxLayout()
+        for i in range(5):
+            func_options_layout.addWidget(QLabel(f"Placeholder {i}"))
+
+        func_sel_layout.addLayout(func_options_layout)
+
+
+        left_layout.addLayout(func_sel_layout)
+
+        main_layout.addLayout(left_layout)
 
         # middle -- layered turbulence viewer
         fmiddle = QFrame()
@@ -100,7 +120,9 @@ class Turbulence_tab(QWidget):
  
         ## list selectors for active/inactive screens
         self.turb_selector = DualListSelector(available=self.turbPages[1:], active=self.turbPages[:1], text_key="title")
+
         self.turb_selector.activeChanged.connect(self.plot_active)
+        self.func_selector.itemDoubleClicked.connect(lambda it: self.turb_selector._add_item(self.turb_selector.available_list, self.load_turb(it.text())))
 
         middle_layout.addWidget(self.turb_selector)
 
@@ -116,18 +138,54 @@ class Turbulence_tab(QWidget):
         fright_top.setLineWidth(1)
 
         right_top_layout = QVBoxLayout(fright_top)
-        tab_widget = WrappedTabs()
+        self.tab_widget = WrappedTabs()
+        self.tab_widget.tabKilled.connect(self.turb_selector.remove_item)
 
         # Add tabs
         for i, page in enumerate(self.turbPages):
-            tab_widget.add_tab(page)
+            self.tab_widget.add_tab(page)
 
-        right_top_layout.addWidget(tab_widget)
+        right_top_layout.addWidget(self.tab_widget)
 
         right_layout.addWidget(fright_top)
         main_layout.addLayout(right_layout)
 
         QTimer.singleShot(0, self.start_turbulence_worker)
+
+    def load_turb(self, func):
+        content = None
+        content_name = None
+        content_data = None
+        file_path = (Path(__file__).parent.parent/ "turbulence" / "defaults" / (str(func) + ".json"))
+        if file_path.is_file():   # skip subdirectories
+            with file_path.open("r") as f:
+                content = json.load(f)       
+                content_name = file_path.stem
+                content_data = {k: v for k, v in content.items() if k != "function"}
+
+        page = TurbulencePage(self.available_funcs[content["function"]], content_data, content_name)
+
+        page = self.check_dup(page)
+        self.turbulence_screens.append({"name": page.title, "data": page.params, "function": page.function})
+        
+        self.turbPages.append(page)
+
+        self.tab_widget.add_tab(page)
+        
+        self.create_page_thread(page)
+
+        return page
+    
+    def check_dup(self, new_page):
+        existing_titles = [tp.title for tp in self.turbPages]
+
+        base_title = new_page.title
+        counter = 1
+        while new_page.title in existing_titles:
+            new_page.title = f"{base_title} ({counter})"
+            counter += 1
+
+        return new_page
 
     # create thread for each loaded screen
     ## NOTE need to change once ability to add/delete screens implemented
@@ -136,27 +194,31 @@ class Turbulence_tab(QWidget):
         self._threads = []
 
         for turbPage in self.turbPages:
-            worker = FrameWorker(turbPage.function, turbPage.params)
-            thread = QThread()
-
-            worker.moveToThread(thread)
-
-            # add created frame to queue once done
-            worker.frame_ready.connect(
-                lambda f, p=turbPage: self._frame_queue.put((p, f))
-            )
-            
-            thread.start()
-            thread.started.connect(worker.step) # initialize threads/pages on startup
-
-            turbPage._worker = worker
-            turbPage._thread = thread
-            self._threads.append((thread, worker))
+            self.create_page_thread(turbPage)
 
         # timer runs in GUI thread
         self._frame_timer = QTimer(self)
         self._frame_timer.timeout.connect(self._process_frames)
         self._frame_timer.start(1000/30)
+
+    def create_page_thread(self, page):
+        worker = FrameWorker(page.function, page.params)
+        thread = QThread()
+
+        worker.moveToThread(thread)
+
+        # add created frame to queue once done
+        worker.frame_ready.connect(
+            lambda f, p=page: self._frame_queue.put((p, f))
+        )
+        
+        thread.start()
+        thread.started.connect(worker.step) # initialize threads/pages on startup
+
+        page._worker = worker
+        page._thread = thread
+        self._threads.append((thread, worker))
+
    
     # update pages and layered screen viewer when threads finish
     def _process_frames(self):
@@ -335,6 +397,22 @@ class TurbulencePage(QWidget):
     def reset(self):
         self.page_reset_button_clicked() 
 
+    # ---- kill page ----
+    def kill(self):
+        # stop any loops/workers
+        if hasattr(self, "_worker"):
+            self._worker.stop()
+
+        if hasattr(self, "_thread"):
+            self._thread.quit()
+            self._thread.wait(1000) 
+
+    def cleanup(self):
+        try:
+            self.new_frame.disconnect()
+        except TypeError:
+            pass
+
 
 
 
@@ -407,6 +485,20 @@ class DualListSelector(QWidget):
         item = QListWidgetItem(self._get_text(obj))
         item.setData(Qt.UserRole, obj)
         list_widget.addItem(item)
+
+    def remove_item(self, obj):
+        removed_from_active = False
+
+        for lst in (self.available_list, self.active_list):
+            for i in reversed(range(lst.count())):
+                item = lst.item(i)
+                if item.data(Qt.UserRole) is obj:
+                    lst.takeItem(i)
+                    if lst is self.active_list:
+                        removed_from_active = True
+
+        if removed_from_active:
+            self.activeChanged.emit(self.active_items())
 
     # --- Moving items ---
     def move_to_active(self):

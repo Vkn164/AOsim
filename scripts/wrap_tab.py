@@ -71,6 +71,9 @@ class FlowLayout(QLayout):
         return size
 
     def _do_layout(self, rect, test_only):
+        if self.parentWidget() and isinstance(self.parentWidget(), QScrollArea):
+            rect = self.parentWidget().parentWidget().viewport().rect()
+
         x = rect.x()
         y = rect.y()
         line_height = 0
@@ -172,6 +175,9 @@ class TabBarContainer(QWidget):
     def update_height(self):
         if self.width() > 0:
             self.setFixedHeight(self.flow.heightForWidth(self.width()))
+        
+        self.flow.invalidate()
+        self.flow.update()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -184,6 +190,8 @@ class TabBarContainer(QWidget):
 
 # ---------- WrappedTabs main widget ----------
 class WrappedTabs(QWidget):
+    tabKilled = Signal(QWidget)
+
     def __init__(self):
         super().__init__()
         self.stack = QStackedWidget()
@@ -198,7 +206,6 @@ class WrappedTabs(QWidget):
         self.tab_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.tab_scroll.setFrameShape(QScrollArea.NoFrame)
         self.tab_scroll.setMaximumHeight(60)
-
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -250,11 +257,14 @@ class WrappedTabs(QWidget):
         self._tabs.append((tab, page_widget))
         self._titles[page_widget] = title
 
+        self.tab_scroll.ensureWidgetVisible(tab)
+
         tab.clicked.connect(lambda: self.set_current(tab))
         tab.closed.connect(lambda: self.close_tab(tab))
         tab.popped.connect(lambda: self.pop_tab(tab, page_widget))
 
         self.set_current(tab)
+        self._refresh()
 
     def set_current(self, tab):
         for t, w in self._tabs:
@@ -264,6 +274,8 @@ class WrappedTabs(QWidget):
             if t is tab:
                 self.stack.setCurrentWidget(w)
 
+        self._refresh()
+
     def close_tab(self, tab, delete_page=True):
         for t, w in self._tabs:
             if t is tab:
@@ -271,11 +283,21 @@ class WrappedTabs(QWidget):
                 self.stack.removeWidget(w)
                 if delete_page:
                     w.deleteLater()   # only delete if not popping out
+                    self.tabKilled.emit(w)
+                
+                    if hasattr(w, "kill"):
+                        w.kill()
+                    if hasattr(w, "cleanup"):
+                        w.cleanup()
+                
                 self._titles.pop(w, None)
                 self._tabs.remove((t, w))
                 break
+        
         if self._tabs:
             self.set_current(self._tabs[0][0])
+        
+        self._refresh()
 
 
     def pop_tab(self, tab, page_widget):
@@ -289,10 +311,15 @@ class WrappedTabs(QWidget):
                 pop.show()
                 break
 
-
     def _reattach(self, widget, title):
         self._popouts.pop(widget, None)
         widget.setParent(None)
         self.add_tab(widget, closable=True)
-
+        
+    def _refresh(self):
+        self.tab_bar.update()
+        self.tab_bar.repaint()
+        self.tab_scroll.updateGeometry()
+        self.tab_scroll.viewport().updateGeometry()
+                
 
