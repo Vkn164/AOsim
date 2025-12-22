@@ -1,7 +1,7 @@
-from PySide6.QtCore import Qt, QSize, QRect, QPoint, Signal, QMargins
+from PySide6.QtCore import Qt, QSize, QRect, QPoint, Signal, QMargins, Slot
 from PySide6.QtWidgets import (
-    QWidget, QLabel, QVBoxLayout, QHBoxLayout,
-    QLayout, QSizePolicy, QStackedWidget, QTabWidget, QScrollArea
+    QWidget, QLabel, QVBoxLayout, QHBoxLayout, QTabWidget, QTabBar,
+    QLayout, QSizePolicy, QStackedWidget, QScrollArea
 )
 from PySide6.QtGui import QPalette
 from PySide6.QtGui import QFontMetrics
@@ -323,3 +323,45 @@ class WrappedTabs(QWidget):
         self.tab_scroll.viewport().updateGeometry()
                 
 
+class DetachableTabBar(QTabBar):
+    """TabBar that emits a signal when a tab should detach."""
+    detach_requested = Signal(int)
+
+    def mouseDoubleClickEvent(self, event):
+        idx = self.tabAt(event.pos())
+        if idx != -1:
+            self.detach_requested.emit(idx)
+        else:
+            super().mouseDoubleClickEvent(event)
+
+class DetachableTabWidget(QTabWidget):
+    """QTabWidget that supports popping out tabs into windows."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        bar = DetachableTabBar(self)
+        bar.detach_requested.connect(self.detach_tab)
+        self.setTabBar(bar)
+        self._popouts = {}  # keep track of popped out widgets
+
+    @Slot(int)
+    def detach_tab(self, index: int):
+        if index < 0 or index >= self.count():
+            return
+
+        widget = self.widget(index)
+        title = self.tabText(index)
+
+        # remove tab but keep the widget alive
+        self.removeTab(index)
+
+        def on_close_callback(returned_widget, returned_title):
+            # reattach widget to tab widget
+            self.addTab(returned_widget, returned_title)
+            self.setCurrentWidget(returned_widget)
+            # remove from popout tracking
+            self._popouts.pop(returned_widget, None)
+
+        # create popout window
+        pop = PopoutWindow(widget, title, on_close_callback)
+        self._popouts[widget] = pop
+        pop.show()

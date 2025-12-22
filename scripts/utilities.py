@@ -46,41 +46,16 @@ class PhaseMap_tools:
     
     # generate influence map for an amplitude and spread factor sigma
     @staticmethod
-    def make_influence(r0, c0, amp=1e-6, sigma=None, grid_size=None):
+    def gaussian(r0, c0, amp=1e-6, sigma=None, grid_size=None):
         if grid_size is None:
             grid_size = params.get("grid_size")
         if sigma is None:
             sigma = max(1.0, grid_size * 0.05)
-        yy, xx = cp.meshgrid(cp.arange(grid_size), cp.arange(grid_size), indexing='ij')
-        # surface (meters) shape (Ngrid,Ngrid) centered at r0,c0
-        rdist2 = (yy - r0)**2 + (xx - c0)**2
-        surf = amp * cp.exp(-0.5 * rdist2 / (sigma**2))
-        # mask outside pupil to 0
-        return cp.asarray(surf)
-
-    # get slopes and centroids of each sub pupil/aperture given a phase map
-    def measure_slopes_from_phase(phase_map, xs, ys, sub_pupil_masks, pad=params.get("field_padding")):
         
-        sub_imgs = phase_map[ys, xs] 
+        y, x = cp.meshgrid(cp.arange(grid_size), cp.arange(grid_size), indexing='ij')
+        surf = amp * cp.exp(-((x - c0)**2 + (y - r0)**2) / (2 * sigma**2))
+        return surf
 
-        # field -> PSF -> centroid 
-        field = sub_pupil_masks * cp.exp(1j * sub_imgs)
-        field_p = cp.pad(field, ((0,0),(pad,pad),(pad,pad)), mode='constant')
-
-        F = cp.fft.fftshift(cp.fft.fft2(cp.fft.ifftshift(field_p, axes=(1,2)), axes=(1,2)), axes=(1,2))
-        I = cp.abs(F)**2
-        I /= cp.sum(I, axis=(1,2), keepdims=True)
-
-        h_p, w_p = I.shape[1], I.shape[2]
-        x_coords = cp.arange(w_p, dtype=cp.float32)[None, None, :]
-        y_coords = cp.arange(h_p, dtype=cp.float32)[None, :, None]
-        cx = cp.sum(I * x_coords, axis=(1,2))
-        cy = cp.sum(I * y_coords, axis=(1,2))
-        center = cp.array([h_p/2.0, w_p/2.0])            # (cy_center, cx_center)
-        centroids = cp.stack((cy, cx), axis=1)           # (n_sub,2)
-        slopes = (centroids - center[None, :]).reshape(-1) 
-
-        return slopes, centroids
 
 
 
@@ -95,8 +70,18 @@ class Pupil_tools:
         if telescope_center_obscuration is None:
             telescope_center_obscuration = params.get("telescope_center_obscuration")
 
-        outer = aotools.pupil.circle(grid_size/2, grid_size)
-        inner = aotools.pupil.circle(grid_size/2 * telescope_center_obscuration, grid_size)
+        def circle(radius, grid_size, center=None):
+            if center is None:
+                center = (grid_size / 2, grid_size / 2)
+
+            y = cp.arange(grid_size)[:, None]
+            x = cp.arange(grid_size)[None, :]
+            dist2 = (y - center[0])**2 + (x - center[1])**2
+            mask = (dist2 <= radius**2).astype(cp.float32)
+            return mask
+
+        outer = circle(grid_size/2, grid_size)
+        inner = circle(grid_size/2 * telescope_center_obscuration, grid_size)
         return cp.asarray(outer - inner)
 
     # generate actuator positions on pupil
@@ -109,14 +94,19 @@ class Pupil_tools:
         if pupil is None:
             pupil = Pupil_tools.generate_pupil(grid_size=grid_size)
 
-        act_centers = []
-        for i in range(actuators):
-            for j in range(actuators):
-                r = int((i + 0.5) * grid_size/actuators)
-                c = int((j + 0.5) * grid_size/actuators)
-                if pupil[r, c] > 0:
-                    act_centers.append([r, c])
-        return cp.asarray(act_centers)
+        # create grid of actuator candidate centers
+        step = grid_size / actuators
+        grid_coords = cp.arange(step/2, grid_size, step)
+        rr, cc = cp.meshgrid(grid_coords, grid_coords, indexing='ij')
+
+        # round to nearest integer for indexing
+        rr_idx = rr.astype(cp.int32)
+        cc_idx = cc.astype(cp.int32)
+
+        # keep only points inside the pupil
+        mask = pupil[rr_idx, cc_idx] > 0
+        act_centers = cp.stack([rr_idx[mask], cc_idx[mask]], axis=1)
+        return act_centers
 
     # generate list of images that denote each actuator's influence (from 0 to 1) on the mirror
     @staticmethod
@@ -132,120 +122,33 @@ class Pupil_tools:
         if act_centers is None:
             act_centers = Pupil_tools.generate_actuators(pupil=pupil, actuators=actuators, grid_size=grid_size)
 
-        influence_maps = []
-        for r0, c0 in act_centers:
-            surf_pos = PhaseMap_tools.make_influence(r0, c0, amp=poke_amplitude, sigma = grid_size/actuators * 0.6, grid_size=grid_size)
-            influence_maps.append(surf_pos / poke_amplitude * pupil)
-        return influence_maps
+        # Vectorized gaussian over actuators 
+        sigma = grid_size / actuators * 0.6
 
-    # generate number of sub apertures, pixel positions, pupil/phase_map indices, sub aperture width, slice indices of each sub aperture, and sub pupil image/map 
-    @staticmethod
-    def generate_sub_apertures(pupil=None, sub_apertures=None, grid_size=None):
-        if grid_size is None:
-            grid_size = params.get("grid_size")
-        if sub_apertures is None:
-            sub_apertures = params.get("sub_apertures")
-        if pupil is None:
-            pupil = Pupil_tools.generate_pupil(grid_size=grid_size)
+        # create coordinate grids
+        y, x = cp.meshgrid(cp.arange(grid_size), cp.arange(grid_size), indexing='ij')
+        y = y[None, :, :]  # shape (1, grid_size, grid_size)
+        x = x[None, :, :]
 
-        sub_aps = aotools.wfs.findActiveSubaps(sub_apertures, pupil, 0.6)
-        sub_aps = cp.asarray(sub_aps)
-        active_sub_aps = sub_aps.shape[0]
+        # actuator centers
+        r0 = act_centers[:, 0][:, None, None]  # (n_act, 1, 1)
+        c0 = act_centers[:, 1][:, None, None]
 
-        sub_aps_idx = (sub_aps/(grid_size/sub_apertures)).astype(int)
+        # Gaussian surfaces
+        surf = cp.exp(-((x - c0)**2 + (y - r0)**2) / (2 * sigma**2))
 
-        sub_ap_width = grid_size/sub_apertures
+        # normalize by poke amplitude and multiply by pupil
+        influence_maps = (surf / surf.max(axis=(1,2), keepdims=True)) * pupil[None, :, :]  
 
-        sub_slice = [(slice(i[0], i[0]+int(sub_ap_width)+1), slice(i[1], i[1]+int(sub_ap_width)+1)) for i in (sub_aps_idx.get()*sub_ap_width).astype(int)]
+        # scale to poke amplitude
+        influence_maps *= poke_amplitude
 
-        sub_pupils = cp.asarray([pupil[i] for i in sub_slice])
+        return influence_maps  # shape (n_act, grid_size, grid_size)
 
-        return active_sub_aps, sub_aps, sub_aps_idx, sub_ap_width, sub_slice, sub_pupils
+
 
 class Analysis:
-    # for each subaperture find the centroid and generate an image 
-    @staticmethod
-    def generate_subaperture_images(k, pupil=None, influence_maps=None, sub_aps_idx=None, sub_ap_width=None, sub_pupils=None, poke_amplitude=None, wfs_lambda=None, pad=None):
-        if poke_amplitude is None:
-            poke_amplitude = params.get("poke_amplitude")
-        if wfs_lambda is None:
-            wfs_lambda = params.get("wfs_lambda")
-        if pad is None:
-            pad = params.get("field_padding")
-        if pupil is None or sub_pupils is None or influence_maps is None or sub_aps_idx is None:
-            active_sub_aps, sub_aps, sub_aps_idx, sub_ap_width, sub_slice, sub_pupils = Pupil_tools.generate_sub_apertures()
-            influence_maps = Pupil_tools.generate_actuator_influence_map()
-            pupil = Pupil_tools.generate_pupil()
-        if influence_maps is None:
-            influence_maps = Pupil_tools.generate_actuator_influence_map(
-                                            act_centers=None,
-                                            pupil=pupil,
-                                            actuators=params.get("actuators"),
-                                            poke_amplitude=params.get("poke_amplitude"),
-                                            grid_size=params.get("grid_size")
-                                        )
-        
-        h = int(sub_ap_width)+1
-        w = int(sub_ap_width)+1
-
-        yy = cp.arange(h)[:,None]
-        xx = cp.arange(w)[None,:]
-
-        top_left = ((sub_aps_idx * sub_ap_width).astype(int))  # shape (n_subaps, 2) on CPU
-        top_left = cp.asarray(top_left)
-
-        ys = top_left[:,0,None,None] + yy[None,:,:]  
-        xs = top_left[:,1,None,None] + xx[None,:,:]
-
-        # pick the k-th actuator poke
-        phase_map = poke_amplitude * (4.0 * cp.pi / wfs_lambda) * influence_maps[k] * pupil
-        
-        # extract subaperture phases
-        sub_imgs = phase_map[ys, xs]
-        
-        # field -> PSF
-        field = sub_pupils * cp.exp(1j * sub_imgs)
-        field_p = cp.pad(field, ((0,0),(pad,pad),(pad,pad)), mode='constant')
-
-        F = cp.fft.fftshift(cp.fft.fft2(cp.fft.ifftshift(field_p, axes=(1,2)), axes=(1,2)), axes=(1,2))
-        I = cp.abs(F)**2
-        I /= cp.sum(I, axis=(1,2), keepdims=True)
-        
-        # centroids
-        h_p, w_p = I.shape[1], I.shape[2]
-        x_coords = cp.arange(w_p, dtype=cp.float32)[None, None, :]
-        y_coords = cp.arange(h_p, dtype=cp.float32)[None, :, None]
-        cx = cp.sum(I * x_coords, axis=(1,2))
-        cy = cp.sum(I * y_coords, axis=(1,2))
-        centroids = cp.stack((cy, cx), axis=1)   # (n_sub, 2)
-
-        n_subaps = sub_aps_idx.shape[0]
-        h_p, w_p = I.shape[1], I.shape[2]
-
-        # Number of subapertures along y/x (assuming square grid)
-        max_y = int(cp.max(sub_aps_idx[:,0])) + 1
-        max_x = int(cp.max(sub_aps_idx[:,1])) + 1
-
-        H = max_y * h_p
-        W = max_x * w_p
-
-        sensor = cp.zeros((H, W), dtype=I.dtype)
-
-        iy = sub_aps_idx[:,0].astype(cp.int32)
-        ix = sub_aps_idx[:,1].astype(cp.int32)
-
-        # create grids for each subap image
-        yy = cp.arange(h_p)[None, :, None] + iy[:, None, None] * h_p  # shape (n_subaps, h_p, 1)
-        xx = cp.arange(w_p)[None, None, :] + ix[:, None, None] * w_p  # shape (n_subaps, 1, w_p)
-
-        # broadcast to full 3D grid
-        yy = cp.broadcast_to(yy, (n_subaps, h_p, w_p))
-        xx = cp.broadcast_to(xx, (n_subaps, h_p, w_p))
-
-        # restitch individual subaperture image into one
-        sensor[yy.ravel(), xx.ravel()] = I.ravel()
-
-        return centroids, sensor
+    
     
     # create PSF given pupil and phase map
     @staticmethod
@@ -304,6 +207,168 @@ class Analysis:
 
         return 2.0 * r_half
 
+
+import threading
+gpu_lock = threading.Lock()
+
+
+class WFSensor_tools:
+    class ShackHartmann:
+        def __init__(self, n_sub = None, wavelength = None, noise=0.0, pupil=None, grid_size=None):
+            if n_sub is None:
+                n_sub = params.get("sub_apertures")
+            if wavelength is None:
+                wavelength = params.get("wfs_lambda")
+            if grid_size is None:
+                grid_size = params.get("grid_size")
+            if pupil is None:
+                pupil = Pupil_tools.generate_pupil(grid_size=grid_size)
+
+            self.n_sub = n_sub
+            self.wavelength = wavelength
+            self.noise = noise
+            self.pupil = pupil
+            self.grid_size = grid_size
+
+            self.active_sub_aps, self.sub_aps, self.sub_aps_idx, self.sub_ap_width, self.sub_slice, self.sub_pupils = self.generate_sub_apertures(pupil, grid_size)
+            
+        def recompute(self, n_sub=None, wavelength=None, noise=0.0, pupil=None, grid_size=None):
+            if n_sub is not None:
+                self.n_sub = n_sub
+            if wavelength is not None:
+                self.wavelength = wavelength
+            if noise is not None:
+                self.noise = noise
+            if pupil is not None:
+                self.pupil = pupil
+            if grid_size is not None:
+                self.grid_size = grid_size
+
+            self.active_sub_aps, self.sub_aps, self.sub_aps_idx, self.sub_ap_width, self.sub_slice, self.sub_pupils = self.generate_sub_apertures(self.pupil, self.grid_size)
+            
+
+        def generate_sub_apertures(self, pupil=None, grid_size=None):
+            if grid_size is None:
+                grid_size = params.get("grid_size")
+            if pupil is None:
+                pupil = Pupil_tools.generate_pupil(grid_size=grid_size)
+
+            sub_aps = aotools.wfs.findActiveSubaps(self.n_sub, pupil, 0.6)
+            sub_aps = cp.asarray(sub_aps)
+            active_sub_aps = sub_aps.shape[0]
+
+            sub_aps_idx = (sub_aps/(grid_size/self.n_sub)).astype(int)
+
+            sub_ap_width = grid_size/self.n_sub
+
+            sub_slice = [(slice(i[0], i[0]+int(sub_ap_width)+1), slice(i[1], i[1]+int(sub_ap_width)+1)) for i in (sub_aps_idx.get()*sub_ap_width).astype(int)]
+
+            sub_pupils = cp.asarray([pupil[i] for i in sub_slice])
+
+            return active_sub_aps, sub_aps, sub_aps_idx, sub_ap_width, sub_slice, sub_pupils
+
+        # for each subaperture find the centroid and generate an image per input phase map in phase map list 
+        def measure(self, pupil=None, phase_map=None, poke_amplitude=None, pad=None):
+            if poke_amplitude is None:
+                poke_amplitude = params.get("poke_amplitude")
+            if pad is None:
+                pad = params.get("field_padding")
+            if pupil is None:
+                pupil = Pupil_tools.generate_pupil()
+
+            n_map = phase_map.shape[0]
+            n_subaps = self.sub_aps_idx.shape[0]
+
+            h = int(self.sub_ap_width) + 1
+            w = int(self.sub_ap_width) + 1
+            yy = cp.arange(h)[:, None]
+            xx = cp.arange(w)[None, :]
+
+            top_left = ((self.sub_aps_idx * self.sub_ap_width).astype(int))
+            top_left = cp.asarray(top_left)
+
+            ys = top_left[:, 0, None, None] + yy[None, :, :]
+            xs = top_left[:, 1, None, None] + xx[None, :, :]
+
+            # phase maps: shape (n_map, N, N)
+            phase_maps = (4.0 * cp.pi / self.wavelength) * phase_map * pupil[None, :, :]
+
+            # extract subaperture phases: shape (n_map, n_sub, h, w)
+            sub_imgs = phase_maps[:, None, :, :][:, :, ys, xs]  # broadcasting over phase maps
+
+            # field -> PSF: shape (n_map, n_sub, h, w)
+            sub_pupils = cp.ones_like(sub_imgs)  # if you have pupil mask per subap
+            
+            field = sub_pupils * cp.exp(1j * sub_imgs)
+            
+            pad_width = [(0, 0)] * (field.ndim - 2) + [(pad, pad), (pad, pad)]
+
+            field_p = cp.pad(field, pad_width, mode='constant')
+
+            # Now do FFT on the last two axes (works for any number of leading axes)
+            F = cp.fft.fftshift(cp.fft.fft2(cp.fft.ifftshift(field_p, axes=(-2, -1)), axes=(-2, -1)), axes=(-2, -1))
+            I = cp.abs(F) ** 2
+            # normalize per subap per map
+            denom = cp.sum(I, axis=(-2, -1), keepdims=True)
+            # avoid division by zero
+            denom = cp.where(denom == 0, 1.0, denom)
+            I = I / denom  # shape (n_map, n_sub, h_p, w_p)
+
+            # centroids (y,x) in pixels
+            h_p, w_p = I.shape[-2], I.shape[-1]
+            x_coords = cp.arange(w_p, dtype=cp.float32)[None, None, None, :]
+            y_coords = cp.arange(h_p, dtype=cp.float32)[None, None, :, None]
+            cx = cp.sum(I * x_coords, axis=(-2, -1))
+            cy = cp.sum(I * y_coords, axis=(-2, -1))
+            centroids = cp.stack((cy, cx), axis=-1)  # (n_map, n_sub, 2)
+
+            # displacement from subap center (in pixels)
+            center = cp.array([(h_p - 1) / 2.0, (w_p - 1) / 2.0], dtype=centroids.dtype)
+            slopes = centroids - center[None, None, :]
+
+            # stitch sensor images: compute H,W
+            max_y = int(cp.max(self.sub_aps_idx[:, 0])) + 1
+            max_x = int(cp.max(self.sub_aps_idx[:, 1])) + 1
+            H = max_y * h_p
+            W = max_x * w_p
+            sensor_image = cp.zeros((n_map, H, W), dtype=I.dtype)
+
+            # build y/x grids robustly
+            iy = self.sub_aps_idx[:, 0].astype(cp.int32)   # (n_sub,)
+            ix = self.sub_aps_idx[:, 1].astype(cp.int32)   # (n_sub,)
+
+            # base offsets (1, n_sub, 1, 1)
+            yy_base = (iy[None, :, None, None] * h_p).astype(cp.int32)
+            xx_base = (ix[None, :, None, None] * w_p).astype(cp.int32)
+
+            # intra-subap pixel indices (1, 1, h_p, 1) and (1,1,1,w_p)
+            yy_pix = cp.arange(h_p, dtype=cp.int32)[None, None, :, None]
+            xx_pix = cp.arange(w_p, dtype=cp.int32)[None, None, None, :]
+
+            # sum to get (1, n_sub, h_p, w_p)
+            yy_grid = yy_base + yy_pix        # (1, n_sub, h_p, 1) -> will broadcast when adding xx
+            xx_grid = xx_base + xx_pix        # (1, n_sub, 1, w_p)
+
+            # broadcast to (n_map, n_sub, h_p, w_p)
+            yy_grid = cp.broadcast_to(yy_grid, (n_map, n_subaps, h_p, w_p))
+            xx_grid = cp.broadcast_to(xx_grid, (n_map, n_subaps, h_p, w_p))
+
+            # place intensities into sensor images using advanced indexing
+            sensor_image[cp.arange(n_map)[:, None, None, None], yy_grid, xx_grid] = I
+
+            return centroids, slopes, sensor_image
+
+    class PyramidWFS:
+        def __init__(self, n_pixels, wavelength, modulation=1.0):
+            self.n_pixels = n_pixels
+            self.wavelength = wavelength
+            self.modulation = modulation
+            self.n_slopes = 2 * n_pixels**2
+
+        def measure(self, phase):
+            # TODO
+            #slopes = pyramid_response(phase, self.n_pixels, self.modulation)
+            return #slopes
 
 
 

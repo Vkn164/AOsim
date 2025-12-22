@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 from scripts.poke_tab import Poke_tab
 from scripts.turbulence_tab import Turbulence_tab
 
+import cupy as cp
 import sys
 
 # Main application window
@@ -51,7 +52,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("AOsim")
-
+        cp.cuda.Device(0).use()
+            
         tabs = QTabWidget()
         tabs.setMovable(True)
 

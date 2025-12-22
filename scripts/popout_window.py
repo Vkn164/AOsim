@@ -1,6 +1,5 @@
 from PySide6.QtWidgets import (
-    QMainWindow, QVBoxLayout, QWidget, QFrame, QVBoxLayout, QWidget,
-    QSizePolicy,
+    QMainWindow, QWidget, QWidget,
 )
 
 class PopoutWindow(QMainWindow):

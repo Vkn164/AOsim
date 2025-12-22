@@ -90,134 +90,170 @@ class FrameWorker(QObject):
 
 
 
+# worker.py
+
+from PySide6.QtCore import QThread
+import threading
+
 class CalculateWorker(QObject):
-    initialized_result = Signal(object)         # dict result for initial/full calculation
-    subap_finished = Signal(object, int)        # ( (centroids, sensor), job_id )
-    finished = Signal()
+    """Singleton worker that runs all WFS sensor computations in a single thread."""
 
-    def __init__(self, params):
+    _instance = None
+    _lock = threading.Lock()
+
+    # Signals
+    initialized_result = Signal(object, object)  # sensor, result
+    subap_finished = Signal(object, object, int) # sensor, (centroids, imgs), job_id
+
+
+    def __init__(self):
         super().__init__()
-        self.params = params
-        # placeholders for large arrays filled by initialize/recompute
-        self.pupil = None
-        self.act_centers = None
-        self.influence_maps = None
-        self.active_sub_aps = None
-        self.sub_aps = None
-        self.sub_aps_idx = None
-        self.sub_ap_width = None
-        self.sub_slice = None
-        self.sub_pupils = None
-        self.ref_centroids = None
-        self.ref_images = None
-        self.ref_science_image = None
-        self.ref_strehl = None
-        self.normalized_image = None
-        self.science_image_plot = None
-        self.n_act = 0
+        self._queue = []        # queue of (sensor, job_type, job_data)
+        self._queue_lock = threading.Lock()
+        self._job_id = 0
+        self._sensor_data = {}  # sensor -> shared GPU arrays
 
-    @Slot()
-    def initialize(self):
-        """Initial full computation. Safe to call when moved to calc thread."""
-        self._do_full_compute()
-        res = {
-            "pupil": self.pupil,
-            "act_centers": self.act_centers,
-            "influence_maps": self.influence_maps,
-            "active_sub_aps": self.active_sub_aps,
-            "sub_aps": self.sub_aps,
-            "sub_aps_idx": self.sub_aps_idx,
-            "sub_ap_width": self.sub_ap_width,
-            "sub_slice": self.sub_slice,
-            "sub_pupils": self.sub_pupils,
-            "ref_centroids": self.ref_centroids,
-            "ref_images": self.ref_images,
-            "ref_science_image": self.ref_science_image,
-            "ref_strehl": self.ref_strehl,
-            "normalized_image": self.normalized_image,
-            "science_image_plot": self.science_image_plot,
-            "n_act": self.n_act,
-            "ref_fwhm": float(self._compute_ref_fwhm()),
-            "diff_lim": float(1.22 * self.params.get("science_lambda") / self.params.get("telescope_diameter"))
-        }
-        self.initialized_result.emit(res)
+        # dedicated thread
+        self.thread = QThread()
+        self.moveToThread(self.thread)
+        self.thread.started.connect(self._start_timer)
+        self.thread.start()
 
-    @Slot()
-    def recompute(self):
-        """Recompute full data (called when params change)."""
-        self._do_full_compute()
-        res = {
-            "pupil": self.pupil,
-            "act_centers": self.act_centers,
-            "influence_maps": self.influence_maps,
-            "active_sub_aps": self.active_sub_aps,
-            "sub_aps": self.sub_aps,
-            "sub_aps_idx": self.sub_aps_idx,
-            "sub_ap_width": self.sub_ap_width,
-            "sub_slice": self.sub_slice,
-            "sub_pupils": self.sub_pupils,
-            "ref_centroids": self.ref_centroids,
-            "ref_images": self.ref_images,
-            "ref_science_image": self.ref_science_image,
-            "ref_strehl": self.ref_strehl,
-            "normalized_image": self.normalized_image,
-            "science_image_plot": self.science_image_plot,
-            "n_act": self.n_act,
-            "ref_fwhm": float(self._compute_ref_fwhm()),
-            "diff_lim": float(1.22 * self.params.get("science_lambda") / self.params.get("telescope_diameter"))
-        }
-        self.initialized_result.emit(res)
+    @classmethod
+    def instance(cls):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = CalculateWorker()
+            return cls._instance
 
-    def _do_full_compute(self):
-        """Private: heavy compute (same as your previous calculate body)."""
-        self.pupil = cp.asarray(ut.Pupil_tools.generate_pupil())
-        self.act_centers = ut.Pupil_tools.generate_actuators(self.pupil)
-        self.influence_maps = ut.Pupil_tools.generate_actuator_influence_map(self.act_centers, self.pupil)
+    def _start_timer(self):
+        self.timer = QTimer()
+        self.timer.timeout.connect(self._process_queue)
+        self.timer.start(10)
 
-        (self.active_sub_aps,
-         self.sub_aps,
-         self.sub_aps_idx,
-         self.sub_ap_width,
-         self.sub_slice,
-         self.sub_pupils) = ut.Pupil_tools.generate_sub_apertures(self.pupil)
+    def request_initialization(self, sensor, params):
+        """Queue a full computation job for a sensor."""
+        with self._queue_lock:
+            self._queue.append((sensor, "init", dict(params)))
 
-        self.ref_centroids, self.ref_images = ut.Analysis.generate_subaperture_images(
-            0,
-            pupil=self.pupil,
-            influence_maps=[self.pupil],
-            sub_aps_idx=self.sub_aps_idx,
-            sub_ap_width=self.sub_ap_width,
-            sub_pupils=self.sub_pupils,
+    def request_recompute(self, sensor, params):
+        """Queue a full recompute job for a sensor."""
+        with self._queue_lock:
+            self._queue.append((sensor, "recompute", params))
+
+    @Slot(int, int, object)
+    def process_subap(self, sensor, k, job_id, params):
+        """Queue a per-actuator measurement for a sensor."""
+        with self._queue_lock:
+            self._queue.append((sensor, "subap", (k, job_id)))
+
+    def _process_queue(self):
+        """Process one job from the queue."""
+        with self._queue_lock:
+            if not self._queue:
+                return
+            job = self._queue.pop(0)
+
+        sensor, job_type, job_data = job
+
+        if job_type in ["init", "recompute"]:
+            sensor, job_type, params = job
+            self._do_full_compute(sensor, params)
+        elif job_type == "subap":
+            k, job_id = job_data
+            self._process_single_subap(sensor, k, job_id)
+
+    def _do_full_compute(self, sensor, params):
+        """Perform full WFS computation for one sensor."""
+        ut.set_params(params)
+        grid_size = int(params.get("grid_size"))
+        pupil = cp.asarray(ut.Pupil_tools.generate_pupil(grid_size=grid_size))
+        act_centers = ut.Pupil_tools.generate_actuators(pupil)
+        influence_maps = ut.Pupil_tools.generate_actuator_influence_map(act_centers, pupil)
+
+        # geometry from sensor
+        active_sub_aps = sensor.active_sub_aps
+        sub_aps = sensor.sub_aps
+        sub_aps_idx = sensor.sub_aps_idx
+        sub_ap_width = sensor.sub_ap_width
+        sub_slice = sensor.sub_slice
+        sub_pupils = sensor.sub_pupils
+
+        # reference centroids & images
+        N = pupil.shape[0]
+        zero_phase = cp.zeros((1, N, N), dtype=pupil.dtype)
+        centroids_ref, slopes_ref, ref_images = sensor.measure(
+            pupil=pupil,
+            phase_map=zero_phase,
+            poke_amplitude=0.0,
+            pad=int(params.get("field_padding", 4))
         )
 
-        self.ref_science_image, self.ref_strehl = ut.Analysis.generate_science_image(self.pupil, cp.zeros_like(self.pupil), pad=512)
-        self.normalized_image = self.ref_science_image / self.ref_science_image.sum()
-        self.science_image_plot = cp.log10(self.normalized_image[512:-512, 512:-512] + 1e-12)
+        ref_centroids = cp.asarray(centroids_ref[0])
+        ref_images = cp.asarray(ref_images[0])
+        ref_science_image, ref_strehl = ut.Analysis.generate_science_image(pupil, cp.zeros_like(pupil), pad=512)
+        normalized_image = ref_science_image / ref_science_image.sum()
+        science_image_plot = cp.log10(normalized_image[512:-512, 512:-512] + 1e-12)
+        n_act = int(act_centers.shape[0])
 
-        self.n_act = int(self.act_centers.shape[0])
+        # emit result
+        res = {
+            "pupil": pupil,
+            "act_centers": act_centers,
+            "influence_maps": influence_maps,
+            "active_sub_aps": active_sub_aps,
+            "sub_aps": sub_aps,
+            "sub_aps_idx": sub_aps_idx,
+            "sub_ap_width": sub_ap_width,
+            "sub_slice": sub_slice,
+            "sub_pupils": sub_pupils,
+            "ref_centroids": ref_centroids,
+            "ref_images": ref_images,
+            "ref_science_image": ref_science_image,
+            "ref_strehl": ref_strehl,
+            "normalized_image": normalized_image,
+            "science_image_plot": science_image_plot,
+            "n_act": n_act,
+            "ref_fwhm": float(self._compute_ref_fwhm(ref_science_image, params)),
+            "diff_lim": float(1.22 * params["science_lambda"] / params["telescope_diameter"])
+        }
+        self.initialized_result.emit(sensor, res)
 
-    def _compute_ref_fwhm(self):
-        plate_rad = (self.params.get("science_lambda") * self.params.get("grid_size")
-                     / (self.params.get("telescope_diameter") * self.ref_science_image.shape[0]))
-        return plate_rad * ut.Analysis.fwhm_radial(self.ref_science_image)
+        # save shared data for per-actuator jobs
+        self._sensor_data[sensor] = {
+            "pupil": pupil,
+            "influence_maps": influence_maps,
+            "ref_centroids": ref_centroids,
+            "sub_aps": sub_aps,
+            "sub_ap_width": sub_ap_width,
+            "params": params
+        }
 
-    @Slot(int, int)
-    def process_subap(self, k, job_id):
-        """Process per-actuator measurement in the same worker thread."""
+    def _process_single_subap(self, sensor, k, job_id):
+        """Perform per-actuator measurement using shared GPU arrays."""
         try:
-            # reuse generate_subaperture_images which returns (centroids, sensor)
-            centroids, sensor = ut.Analysis.generate_subaperture_images(
-                k,
-                pupil=self.pupil,
-                influence_maps=self.influence_maps,
-                sub_aps_idx=self.sub_aps_idx,
-                sub_ap_width=self.sub_ap_width,
-                sub_pupils=self.sub_pupils,
+            if sensor not in self._sensor_data:
+                self.subap_finished.emit(sensor, (cp.zeros((0, 2)), cp.zeros((1, 1))), job_id)
+                print("WARN sensor not in worker")
+                return
+
+            data = self._sensor_data[sensor]
+
+            phase_map_for_k = cp.asarray(data["influence_maps"][k:k+1])
+            centroids, slopes, sensor_images = sensor.measure(
+                pupil=data["pupil"],
+                phase_map=phase_map_for_k,
+                poke_amplitude=data["params"].get("poke_amplitude"),
+                pad=int(data["params"].get("field_padding", 4))
             )
-            # Emit exactly like SubapWorker did: (centroids, sensor), job_id
-            self.subap_finished.emit((centroids, sensor), job_id)
+
+            self.subap_finished.emit(sensor, (cp.asarray(centroids[0]), cp.asarray(sensor_images[0])), job_id)
         except Exception:
             import traceback
             traceback.print_exc()
-            # emit empty result to avoid hanging UI
-            self.subap_finished.emit((cp.zeros((0,2)), cp.zeros((1,1))), job_id)
+            self.subap_finished.emit(sensor, (cp.zeros((0, 2)), cp.zeros((1, 1))), job_id)
+
+    def _compute_ref_fwhm(self, ref_science_image, params):
+        plate_rad = (params["science_lambda"] * params["grid_size"] /
+                     (params["telescope_diameter"] * ref_science_image.shape[0]))
+        return plate_rad * ut.Analysis.fwhm_radial(ref_science_image)
